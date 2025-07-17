@@ -1,4 +1,4 @@
-import { Database } from 'jsr:@db/sqlite@0.11';
+import { Database } from 'jsr:@db/sqlite';
 import { Application } from 'jsr:@oak/oak/application';
 import { Router } from 'jsr:@oak/oak/router';
 import { Context } from 'jsr:@oak/oak/context';
@@ -114,7 +114,6 @@ async function decryptWithVault(ciphertext: string, key: string) {
   return text;
 }
 
-
 // middleware
 export const logger = async (context: Context, nextFn: Next) => {
   const { request } = context;
@@ -141,13 +140,14 @@ dataRouter.post('/', async ({ request, response }) => {
     response.body = {
       message: '👻'
     }
+    return;
   }
-
   try {
     const stmt = client.prepare(`
       INSERT INTO data 
         (data, keyname, created_at)
-      VALUES (?, ?, ?)
+      VALUES 
+        (?, ?, ?)
       RETURNING 
         id, data, keyname, created_at, updated_at
     `);
