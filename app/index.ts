@@ -3,7 +3,6 @@ import { Application } from 'jsr:@oak/oak/application';
 import { Router } from 'jsr:@oak/oak/router';
 import { Context } from 'jsr:@oak/oak/context';
 import { Next } from 'jsr:@oak/oak/middleware';
-import { stringToURL } from "jsr:@denosaurs/plug@1/util";
 
 // types
 type ConnectionDetails = {
@@ -11,20 +10,29 @@ type ConnectionDetails = {
 }
 
 type ServerConfig = {
-  databaseFile: string
+  databaseFile: string,
   port: number,
+  vaultAddr: string,
+  vaulToken: string,
+}
+
+type TransitEncryptResponse = {
+  data: {
+    ciphertext: string;
+    key_version: number;
+  }
 }
 
 // DB stuff
 let db: Database | null = null;
 
-const getClient = async (): Promise<Database> => {
+async function getClient(): Promise<Database> {
   if (!db) throw new Error('DB connection not setup');
 
   return await Promise.resolve(db);
 }
 
-const setup = async ({ databaseFile }: ConnectionDetails) => {
+async function setup({ databaseFile }: ConnectionDetails) {
   db = new Database(databaseFile);
 
   const setup = db.prepare(`
@@ -32,16 +40,46 @@ const setup = async ({ databaseFile }: ConnectionDetails) => {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       
       data varchar(1000),
+      keyname varchar(10) NOT NULL,
       
       created_at varchar(25) NOT NULL,
       updated_at varchar(25)
-      );
+    );
   `);
 
   await setup.run()
       
   const [version] = await db.prepare('select sqlite_version()').value<[string]>()!;
   console.log(`[ DATABASE ] :: connection verified - sqlite version ${version}`);
+}
+
+// Vault stuff
+async function encryptWithVault(data: string, key: string) {
+  const VAULT_TOKEN= Deno.env.get('VAULT_TOKEN');
+  const VAULT_ADDR = Deno.env.get('VAULT_ADDR');
+
+  const b64 = btoa(JSON.stringify(data));
+
+  const body = JSON.stringify({ plaintext: b64 });
+
+  const res = await fetch(`${VAULT_ADDR}/v1/transit/encrypt/${key}`, {
+    method: 'POST',
+    body,
+    headers: {
+      'X-Vault-Token': `${VAULT_TOKEN}`,
+      'content-type': 'application/json',
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error('unable to encrypt');
+  }
+
+  const json = await res.json() as TransitEncryptResponse;
+
+  const encryptedData = json.data.ciphertext;
+
+  return encryptedData;
 }
 
 // middleware
@@ -58,20 +96,33 @@ const dataRouter = new Router();
 
 dataRouter.post('/', async ({ request, response }) => {
   const body = await request.body.json();
+  const { data, key } = body;
 
   const client = await getClient();
+  let encryptedData;
+
+  try {
+    encryptedData = await encryptWithVault(data, key);
+  } catch (e) {
+    response.status = 500;
+    response.body = {
+      message: '👻'
+    }
+  }
+
 
   try {
     const stmt = client.prepare(`
       INSERT INTO data 
-        (data, created_at)
-      VALUES (?, ?)
+        (data, keyname, created_at)
+      VALUES (?, ?, ?)
       RETURNING 
-        id, data, created_at, updated_at
+        id, data, keyname, created_at, updated_at
     `);
     const now = new Date().toISOString();
     const row = await stmt.value(
-      body.data,
+      encryptedData,
+      key,
       now,
     );
 
@@ -83,16 +134,17 @@ dataRouter.post('/', async ({ request, response }) => {
       return
     }
 
-    const [ id, data, created_at, updated_at ] = row;
+    const [ id, data, keyname, created_at, updated_at ] = row;
 
     response.status = 201;
     response.body = {
       data: {
-        id, data, created_at, updated_at
+        id, data, created_at, key: keyname, updated_at
       }
     }
     return;
   } catch (e) {
+    console.log(e);
     response.status = 500;
     response.body = {
       message: e
@@ -141,6 +193,7 @@ dataRouter.get('/:id', async ({ params, response }) => {
     }
   }
 });
+
 async function server(config: ServerConfig): Promise<void> {
   const app = new Application();
 
