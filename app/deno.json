@@ -1,0 +1,9 @@
+{
+  "tasks": {
+    "dev": "deno run --watch -A --env-file=./config/.env.dev index.ts",
+    "start": "deno run index.ts"
+  },
+  "imports": {
+    "@oak/oak": "jsr:@oak/oak@^17.1.5"
+  }
+}
