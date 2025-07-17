@@ -12,8 +12,6 @@ type ConnectionDetails = {
 type ServerConfig = {
   databaseFile: string,
   port: number,
-  vaultAddr: string,
-  vaulToken: string,
 }
 
 type TransitEncryptResponse = {
@@ -22,6 +20,14 @@ type TransitEncryptResponse = {
     key_version: number;
   }
 }
+
+type TransitDecryptResponse = {
+  data: {
+    plaintext: string;
+    key_version: number;
+  }
+}
+
 
 // DB stuff
 let db: Database | null = null;
@@ -82,6 +88,33 @@ async function encryptWithVault(data: string, key: string) {
   return encryptedData;
 }
 
+async function decryptWithVault(ciphertext: string, key: string) {
+  const VAULT_TOKEN = Deno.env.get('VAULT_TOKEN');
+  const VAULT_ADDR = Deno.env.get('VAULT_ADDR');
+
+  const body = JSON.stringify({ ciphertext });
+
+  const res = await fetch(`${VAULT_ADDR}/v1/transit/decrypt/${key}`, {
+    method: 'POST',
+    body,
+    headers: {
+      'X-Vault-Token': `${VAULT_TOKEN}`,
+      'content-type': 'application/json',
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error('unable to encrypt');
+  }
+
+  const { data } = await res.json() as TransitDecryptResponse;
+
+  const json = atob(data.plaintext);
+  const text = JSON.parse(json);
+  return text;
+}
+
+
 // middleware
 export const logger = async (context: Context, nextFn: Next) => {
   const { request } = context;
@@ -109,7 +142,6 @@ dataRouter.post('/', async ({ request, response }) => {
       message: '👻'
     }
   }
-
 
   try {
     const stmt = client.prepare(`
@@ -160,7 +192,7 @@ dataRouter.get('/:id', async ({ params, response }) => {
   try {
     const stmt = client.prepare(`
       SELECT
-        id, data, created_at
+        id, data, keyname, created_at
       FROM 
         data
       WHERE
@@ -177,12 +209,17 @@ dataRouter.get('/:id', async ({ params, response }) => {
       return
     }
 
-    const [id, data, created_at] = row;
+    const [id, data, keyname,  created_at] = row;
+
+    const decryptedText = await decryptWithVault((data as string), (keyname as string));
 
     response.status = 200;
     response.body = {
       data: {
-        id, data, created_at
+        id, 
+        data: 
+        decryptedText, 
+        created_at
       }
     }
     return;
